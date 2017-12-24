@@ -1,0 +1,106 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""money-helsinki
+
+Usage:
+  money-helsinki <expenses>
+  money-helsinki -h | --help
+
+Computes the required transactions to achieve identical expenses
+across all people appearing in the expenses file. For non-uniform
+participation, the "day" column in the expenses file should be used to
+indicate the specific day of the expense. This will be taken into
+account when computing the total balance.
+
+Arguments:
+  <expenses>      CSV file containing all expenses
+
+Options:
+  -h --help       Show this screen.
+
+"""
+
+import collections
+import docopt
+import pandas
+
+
+def load_data(fn):
+    """Loads the expenses from a CSV file"""
+    return pandas.read_csv(fn, dtype={'Name': str, 'Reason': str, 'Amount': float, 'Day': int})
+
+
+def compute_balance_per_person(df):
+    """
+    Computes total balance per person from a pandas dataframe,
+    according to days where they were present; balance is negative for
+    people who have paid too much
+
+    """
+
+    balance_per_person = collections.defaultdict(float)
+    for day in df.Day.unique():
+
+        names_present = df.query('Day == @day').Name.unique()
+        target_expense = df.query('Day == @day').Amount.sum() / float(names_present.size)
+
+        for name in names_present:
+            balance_per_person[name] += target_expense - df.query('Name == @name & Day == @day').Amount.sum()
+
+        assert(abs(sum(balance_per_person.values())) < 1e-12)  # consistency check
+
+    return balance_per_person
+
+
+def compute_transactions(balance_per_person):
+    """
+    Computes the required transactions to bring the balance per person
+    to zero. Loops over all people who have positive balance and fills
+    up balance of all people with negative balance. Modifies
+    balance_per_person in place.
+
+    """
+    senders = [name for name in balance_per_person if balance_per_person[name] > 0.]
+    recipients = [name for name in balance_per_person if balance_per_person[name] < 0.]
+    transactions = {}
+
+    for sender in senders:
+        for recipient in recipients:
+
+            # amount for transaction is determined by smaller balance
+            # of sender and recipient
+            if balance_per_person[sender] < abs(balance_per_person[recipient]):
+                amount = balance_per_person[sender]
+            else:
+                amount = abs(balance_per_person[recipient])
+
+            assert(amount >= 0.)  # consistency check
+
+            # perform and store transaction
+            if amount > 1e-12:  # avoid rounding issues
+                balance_per_person[sender] -= amount
+                balance_per_person[recipient] += amount
+                transactions[(sender, recipient)] = amount
+
+    assert(all([abs(v) < 1e-12 for v in balance_per_person.values()]))  # consistency check
+
+    return transactions
+
+
+if __name__ == '__main__':
+    args = docopt.docopt(__doc__)
+
+    expenses = load_data(args['<expenses>'])
+    balance_per_person = compute_balance_per_person(expenses)
+
+    print('Balance per person:')
+    for name, balance in balance_per_person.items():
+        print('{:4} {:7.2f}€'.format(name, balance))
+    print()
+
+    transactions = compute_transactions(balance_per_person)
+
+    print('Required transactions:')
+    for (sender, recipient), value in sorted(transactions.items()):
+        print('{} -> {} {:7.2f}€'.format(sender, recipient, value))
